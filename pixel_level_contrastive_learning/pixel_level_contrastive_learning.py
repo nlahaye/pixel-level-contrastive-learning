@@ -105,7 +105,7 @@ class MLP(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(chan, inner_dim),
-            nn.BatchNorm1d(inner_dim),
+            nn.InstanceNorm1d(inner_dim),
             nn.ReLU(),
             nn.Linear(inner_dim, chan_out)
         )
@@ -231,8 +231,12 @@ class NetWrapper(nn.Module):
             self._register_hook()
 
         _ = self.net(x)
-        hidden_pixel = self.hidden_pixel
-        hidden_instance = self.hidden_instance
+        if type(self.hidden_pixel) is tuple:
+            hidden_pixel = self.hidden_pixel[0]
+            hidden_instance = self.hidden_instance[1]
+        else:
+            hidden_pixel = self.hidden_pixel
+            hidden_instance = self.hidden_instance
         self.hidden_pixel = None
         self.hidden_instance = None
         assert hidden_pixel is not None, f'hidden pixel layer {self.layer_pixel} never emitted an output'
@@ -273,21 +277,23 @@ class PixelCL(nn.Module):
         use_pixpro = True,
         cutout_ratio_range = (0.6, 0.8),
         cutout_interpolate_mode = 'nearest',
-        coord_cutout_interpolate_mode = 'bilinear'
+        coord_cutout_interpolate_mode = 'bilinear',
+        in_chans = 3
     ):
         super().__init__()
 
         DEFAULT_AUG = nn.Sequential(
-            RandomApply(augs.ColorJitter(0.8, 0.8, 0.8, 0.2), p=0.8),
-            augs.RandomGrayscale(p=0.2),
+            #RandomApply(augs.ColorJitter(0.8, 0.8, 0.8, 0.2), p=0.8),
+            #augs.RandomGrayscale(p=0.2),
             RandomApply(filters.GaussianBlur2d((3, 3), (1.5, 1.5)), p=0.1),
             augs.RandomSolarize(p=0.5),
-            augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
+            #augs.Normalize(mean=torch.tensor([0.485, 0.456, 0.406]), std=torch.tensor([0.229, 0.224, 0.225]))
         )
 
         self.augment1 = default(augment_fn, DEFAULT_AUG)
         self.augment2 = default(augment_fn2, self.augment1)
         self.prob_rand_hflip = prob_rand_hflip
+        self.in_chans = in_chans
 
         self.online_encoder = NetWrapper(
             net = net,
@@ -325,7 +331,7 @@ class PixelCL(nn.Module):
         self.to(device)
 
         # send a mock image tensor to instantiate singleton parameters
-        self.forward(torch.randn(2, 3, image_size, image_size, device=device))
+        self.forward(torch.randn(2, self.in_chans, image_size, image_size, device=device))
 
     @singleton('target_encoder')
     def _get_target_encoder(self):
@@ -350,8 +356,11 @@ class PixelCL(nn.Module):
         flip_image_one_fn = rand_flip_fn if flip_image_one else identity
         flip_image_two_fn = rand_flip_fn if flip_image_two else identity
 
-        cutout_coordinates_one, _ = cutout_coordinates(x, self.cutout_ratio_range)
-        cutout_coordinates_two, _ = cutout_coordinates(x, self.cutout_ratio_range)
+        cutout_coordinates_one = cutout_coordinates(x, self.cutout_ratio_range)
+        cutout_coordinates_two = cutout_coordinates(x, self.cutout_ratio_range)
+
+        cutout_coordinates_one = cutout_coordinates_one[0]
+        cutout_coordinates_two = cutout_coordinates_two[0]
 
         image_one_cutout = cutout_and_resize(x, cutout_coordinates_one, mode = self.cutout_interpolate_mode)
         image_two_cutout = cutout_and_resize(x, cutout_coordinates_two, mode = self.cutout_interpolate_mode)
